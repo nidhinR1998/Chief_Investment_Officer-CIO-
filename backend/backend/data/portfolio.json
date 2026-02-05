@@ -1,0 +1,12 @@
+{
+  "cash": 998500.0,
+  "holdings": {
+    "TATASTEEL.NS": {
+      "ticker": "TATASTEEL.NS",
+      "quantity": 10,
+      "average_price": 150.0,
+      "last_price": 150.0,
+      "last_updated": "2026-02-05T13:46:01.230179"
+    }
+  }
+}
