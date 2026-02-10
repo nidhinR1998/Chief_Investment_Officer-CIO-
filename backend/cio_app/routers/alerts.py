@@ -1,64 +1,48 @@
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, HTTPException, Depends
 from typing import List
-import json
-import os
-import logging
+from cio_app.models.db import get_db
+from cio_app.models.schema import AlertDB, AlertCreate
+from bson import ObjectId
 
 router = APIRouter(prefix="/api/v1/alerts", tags=["alerts"])
-logger = logging.getLogger(__name__)
 
-class Alert(BaseModel):
-    id: int
-    ticker: str
-    target_price: float
-    condition: str # ABOVE, BELOW
-    active: bool = True
-    triggered: bool = False
-    triggered_at: str = None
+@router.get("/", response_model=List[AlertDB])
+async def get_alerts(db = Depends(get_db)):
+    alerts = await db.alerts.find().to_list(100)
+    return alerts
 
-DATA_FILE = "backend/data/alerts.json"
-
-def load_alerts():
-    if not os.path.exists(DATA_FILE):
-        return []
-    try:
-        with open(DATA_FILE, 'r') as f:
-            data = json.load(f)
-            return [Alert(**item) for item in data]
-    except Exception as e:
-        logger.error(f"Failed to load alerts: {str(e)}")
-        return []
-
-def save_alerts(alerts: List[Alert]):
-    os.makedirs(os.path.dirname(DATA_FILE), exist_ok=True)
-    with open(DATA_FILE, 'w') as f:
-        json.dump([a.dict() for a in alerts], f, indent=2, default=str)
-
-@router.get("/", response_model=List[Alert])
-async def get_alerts():
-    return load_alerts()
-
-@router.post("/")
-async def create_alert(alert: Alert):
-    alerts = load_alerts()
-    # Generate ID
-    new_id = 1
-    if alerts:
-        new_id = max(a.id for a in alerts) + 1
-    
-    alert.id = new_id
+@router.post("/", response_model=AlertDB)
+async def create_alert(alert: AlertCreate, db = Depends(get_db)):
     # Normalize ticker
-    if not alert.ticker.endswith(".NS") and not alert.ticker.endswith(".BO"):
-        alert.ticker = f"{alert.ticker}.NS"
+    ticker = alert.ticker
+    if not ticker.endswith(".NS") and not ticker.endswith(".BO"):
+        ticker = f"{ticker}.NS"
         
-    alerts.append(alert)
-    save_alerts(alerts)
-    return alert
+    new_alert = AlertDB(
+        ticker=ticker, 
+        target_price=alert.target_price, 
+        condition=alert.condition,
+        active=True
+    )
+    
+    result = await db.alerts.insert_one(new_alert.dict(by_alias=True))
+    created_alert = await db.alerts.find_one({"_id": result.inserted_id})
+    return created_alert
 
 @router.delete("/{alert_id}")
-async def delete_alert(alert_id: int):
-    alerts = load_alerts()
-    alerts = [a for a in alerts if a.id != alert_id]
-    save_alerts(alerts)
+async def delete_alert(alert_id: str, db = Depends(get_db)):
+    if not ObjectId.is_valid(alert_id):
+        raise HTTPException(status_code=400, detail="Invalid ID format")
+        
+    result = await db.alerts.delete_one({"_id": ObjectId(alert_id)})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Alert not found")
+        
     return {"status": "deleted"}
+
+# Helper for Scheduler (no Depends)
+def load_alerts_sync():
+    # This is tricky because motor is async. 
+    # The scheduler runs in an async context, so we should allow it to await.
+    # We will refactor scheduler to call a DB function instead of importing this.
+    pass

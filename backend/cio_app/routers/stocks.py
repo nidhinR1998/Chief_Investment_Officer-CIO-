@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from cio_app.services.decision_engine import decision_engine
 from cio_app.services.scheduler import scheduler
+from cio_app.services.nlp_engine import nlp_service # Import NLP for ticker resolution
 import logging
 
 router = APIRouter(
@@ -16,6 +17,17 @@ async def get_stock_analysis(ticker: str, user_price: float = 0.0, user_quantity
     Get (or generate) analysis for a specific stock.
     Requesting this endpoint triggers a fresh analysis.
     """
+    # Validating Ticker via NLP (Resolving Aliases like 'ICICI' -> 'ICICIBANK')
+    # If the ticker is short or doesn't look like a standard NSE format, try to resolve it.
+    if "." not in ticker: 
+         # Try NLP resolution first
+         nlp_result = nlp_service.parse_query(ticker)
+         if nlp_result.get("valid") and nlp_result.get("ticker"):
+              ticker = nlp_result.get("ticker")
+         else:
+              # Fallback to appending .NS
+              ticker = f"{ticker}.NS" 
+              
     if not ticker.endswith(".NS") and not ticker.endswith(".BO"):
         ticker = f"{ticker}.NS" 
         
@@ -61,6 +73,14 @@ async def start_monitoring(ticker: str):
     """
     Start background monitoring for a stock.
     """
+    # Validating Ticker via NLP
+    if "." not in ticker: 
+         nlp_result = nlp_service.parse_query(ticker)
+         if nlp_result.get("valid") and nlp_result.get("ticker"):
+              ticker = nlp_result.get("ticker")
+         else:
+              ticker = f"{ticker}.NS"
+              
     if not ticker.endswith(".NS") and not ticker.endswith(".BO"):
         ticker = f"{ticker}.NS"
         
@@ -76,12 +96,56 @@ async def stop_monitoring(ticker: str):
     """
     Stop background monitoring for a stock.
     """
+    # Validating Ticker via NLP
+    if "." not in ticker: 
+         nlp_result = nlp_service.parse_query(ticker)
+         if nlp_result.get("valid") and nlp_result.get("ticker"):
+              ticker = nlp_result.get("ticker")
+         else:
+              ticker = f"{ticker}.NS"
+              
     if not ticker.endswith(".NS") and not ticker.endswith(".BO"):
         ticker = f"{ticker}.NS"
         
     try:
-        scheduler.remove_stock_job(ticker)
+        await scheduler.remove_stock_job(ticker)
         return {"status": "stopped", "ticker": ticker, "message": "Monitoring stopped"}
     except Exception as e:
         logger.error(f"Failed to stop monitoring for {ticker}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+@router.get("/{ticker}/financials")
+async def get_stock_financials(ticker: str):
+    """
+    Get deep financials (Balance Sheet, Income Statement, Cash Flow).
+    """
+    from cio_app.services.market_data import market_data
+    return await market_data.get_financials_deep(ticker)
+
+@router.get("/{ticker}/holders")
+async def get_stock_holders(ticker: str):
+    """
+    Get Major and Institutional Holders.
+    """
+    from cio_app.services.market_data import market_data
+    return await market_data.get_holders(ticker)
+
+@router.get("/{ticker}/history")
+async def get_stock_history(ticker: str, period: str = "1mo", interval: str = "1d"):
+    """
+    Get historical price data (OHLCV).
+    """
+    from cio_app.services.market_data import market_data
+    df = await market_data.get_stock_data(ticker, period=period, interval=interval)
+    
+    if df.empty:
+        return []
+        
+    # Reset index to make Date a column and convert to dict records
+    df = df.reset_index()
+    # Convert Timestamp objects to ISO strings
+    if 'Date' in df.columns:
+        df['Date'] = df['Date'].apply(lambda x: x.isoformat() if hasattr(x, 'isoformat') else str(x))
+    elif 'Datetime' in df.columns:
+        df['Date'] = df['Datetime'].apply(lambda x: x.isoformat() if hasattr(x, 'isoformat') else str(x))
+        
+    return df.to_dict(orient="records")

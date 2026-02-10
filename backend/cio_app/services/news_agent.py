@@ -52,14 +52,14 @@ class NewsService:
                     # Extract fields
                     title = content.get('title', 'No Title')
                     pub_date = content.get('pubDate', '')[:10] # 2026-01-23...
-                    summary = content.get('summary', 'News from Yahoo Finance')
+                    summary = content.get('summary', 'News from Chief Investment Officer(CIO)')
                     
                     # Link might be in clickThroughUrl or canonicalUrl
                     link_obj = content.get('clickThroughUrl') or content.get('canonicalUrl')
                     link = link_obj.get('url') if link_obj else '#'
                     
                     # Provider
-                    provider = content.get('provider', {}).get('displayName', 'Yahoo Finance')
+                    provider = content.get('provider', {}).get('displayName', 'Chief Investment Officer(CIO)')
 
                     news_items.append({
                         "title": title,

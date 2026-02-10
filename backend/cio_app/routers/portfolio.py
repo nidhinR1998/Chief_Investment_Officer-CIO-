@@ -1,71 +1,75 @@
-from fastapi import APIRouter, HTTPException, Body
+from fastapi import APIRouter, HTTPException, Body, Depends
 from cio_app.models.portfolio import TradeRequest
+from cio_app.models.db import get_db
+from cio_app.models.schema import PortfolioItemDB, TransactionDB, UserDB
 from datetime import datetime
 import logging
-import json
-import os
 import asyncio
 
 router = APIRouter(prefix="/api/v1/portfolio", tags=["portfolio"])
 logger = logging.getLogger(__name__)
 
-# Persistence File
-DATA_FILE = "backend/data/portfolio.json"
-INITIAL_CASH = 1000000.0  # 10 Lakhs
+DEFAULT_USER_ID = "default_user"
 
-def load_data():
-    if not os.path.exists(DATA_FILE):
-        return {"cash": INITIAL_CASH, "holdings": {}}
-    try:
-        with open(DATA_FILE, 'r') as f:
-            return json.load(f)
-    except:
-        return {"cash": INITIAL_CASH, "holdings": {}}
+async def get_user_balance(db, user_id=DEFAULT_USER_ID):
+    user = await db.users.find_one({"user_id": user_id})
+    if not user:
+        # Create default user if not exists
+        new_user = UserDB(user_id=user_id, cash=1000000.0)
+        await db.users.insert_one(new_user.dict(by_alias=True))
+        return new_user.cash
+    return user["cash"]
 
-def save_data(data):
-    os.makedirs(os.path.dirname(DATA_FILE), exist_ok=True)
-    with open(DATA_FILE, 'w') as f:
-        json.dump(data, f, indent=2, default=str)
+async def update_user_balance(db, amount_change, user_id=DEFAULT_USER_ID):
+    await db.users.update_one(
+        {"user_id": user_id},
+        {"$inc": {"cash": amount_change}}
+    )
 
 @router.get("/")
-async def get_portfolio():
-    """
-    Get current user portfolio with live price updates.
-    """
-    data = load_data()
-    holdings = []
-    
-    # We need to fetch live prices to calculate current value
-    # For speed, using yfinance directly here or market_data service
-    import yfinance as yf
-    
-    total_invested = 0
-    current_value = 0
-    
-    # Fetch live prices for all holdings in parallel
-    if data["holdings"]:
+async def get_portfolio(db=Depends(get_db)):
+    """Retrieve user's portfolio with current market values"""
+    try:
+        # Check if database is connected
+        if db is None:
+            logger.warning("Database not connected, returning empty portfolio")
+            return {
+                "cash": 10000.0,
+                "holdings": [],
+                "total_value": 10000.0,
+                "total_gain_loss": 0.0,
+                "gain_loss_pct": 0.0
+            }
+        
+        # Get cash balance
+        cash = await get_user_balance(db)
+        
+        # Fetch Holdings
+        cursor = db.portfolios.find({"user_id": DEFAULT_USER_ID})
+        portfolio_items = await cursor.to_list(100)
+        
+        holdings = []
+        tickers = [item["ticker"] for item in portfolio_items]
+        
+        # Fetch Live Prices
         import yfinance as yf
-        tickers = list(data["holdings"].keys())
-        try:
-            # Download 1-day data for all tickers to get latest 'Close' or 'Current'
-            # interval='1m' allows getting very recent price during market hours
-            # period='1d' is sufficient
-            live_data = yf.download(tickers, period="5d", interval="1m", progress=False)['Close'].iloc[-1]
-            
-            # If single ticker, live_data is float, else Series
-            is_single = len(tickers) == 1
-        except Exception as e:
-            logger.error(f"Live price fetch failed: {e}")
-            live_data = None
+        live_data = None
+        if tickers:
+            try:
+                live_data = yf.download(tickers, period="5d", interval="1m", progress=False)['Close'].iloc[-1]
+            except Exception as e:
+                logger.error(f"Live price fetch failed: {e}")
 
-    for ticker, item in data["holdings"].items():
-        try:
-            current_price = item["average_price"] # Default Fallback
+        for item in portfolio_items:
+            ticker = item["ticker"]
+            avg_price = item["average_price"]
+            qty = item["quantity"]
+            current_price = avg_price # Fallback
             
-            # Try to get live price
+            # Parse live price
             if live_data is not None:
                 try:
-                    if is_single:
+                    if len(tickers) == 1:
                         price = float(live_data)
                     else:
                         price = float(live_data[ticker])
@@ -73,82 +77,110 @@ async def get_portfolio():
                     if price > 0:
                         current_price = price
                 except:
-                    pass # Keep fallback
+                    pass
 
             holdings.append({
                 "ticker": ticker,
-                "quantity": item["quantity"],
-                "average_price": item["average_price"],
+                "quantity": qty,
+                "average_price": avg_price,
                 "current_price": current_price,
-                "invested_value": item["quantity"] * item["average_price"],
-                "market_value": item["quantity"] * current_price
+                "invested_value": qty * avg_price,
+                "market_value": qty * current_price
             })
-            
-        except Exception as e:
-            logger.error(f"Error processing {ticker}: {e}")
 
-    return {
-        "cash": data["cash"],
-        "holdings": holdings,
-        "total_invested": sum(h["invested_value"] for h in holdings),
-        "holdings_count": len(holdings)
-    }
+        return {
+            "cash": cash,
+            "holdings": holdings,
+            "total_invested": sum(h["invested_value"] for h in holdings),
+            "holdings_count": len(holdings)
+        }
+    except Exception as e:
+        logger.error(f"Error fetching portfolio: {e}")
+        return {
+            "cash": 10000.0,
+            "holdings": [],
+            "total_invested": 0.0,
+            "holdings_count": 0
+        }
 
 @router.post("/trade")
-async def execute_trade(trade: TradeRequest):
+async def execute_trade(trade: TradeRequest, db = Depends(get_db)):
     """
-    Execute a Buy or Sell trade.
+    Execute a Buy or Sell trade with DB Persistence.
     """
-    data = load_data()
     ticker = trade.ticker.upper()
     trading_value = trade.quantity * trade.price
+    current_cash = await get_user_balance(db)
     
     if trade.action == "BUY":
-        if data["cash"] < trading_value:
-            raise HTTPException(status_code=400, detail=f"Insufficient Funds. Required: ₹{trading_value}, Available: ₹{data['cash']}")
+        if current_cash < trading_value:
+            raise HTTPException(status_code=400, detail=f"Insufficient Funds. Required: ₹{trading_value}, Available: ₹{current_cash}")
             
-        # Execute Buy
-        data["cash"] -= trading_value
+        # 1. Update Cash
+        await update_user_balance(db, -trading_value)
         
-        current = data["holdings"].get(ticker, {
-            "ticker": ticker, 
-            "quantity": 0, 
-            "average_price": 0.0
-        })
+        # 2. Update/Upsert Portfolio
+        existing = await db.portfolios.find_one({"user_id": DEFAULT_USER_ID, "ticker": ticker})
         
-        # Weighted Average Price
-        total_cost = (current["quantity"] * current["average_price"]) + trading_value
-        new_qty = current["quantity"] + trade.quantity
-        new_avg = total_cost / new_qty
-        
-        current["quantity"] = new_qty
-        current["average_price"] = new_avg
-        current["last_price"] = trade.price # Update last seen price
-        current["last_updated"] = datetime.now().isoformat()
-        
-        data["holdings"][ticker] = current
-
+        if existing:
+            # Weighted Avg Logic
+            total_cost = (existing["quantity"] * existing["average_price"]) + trading_value
+            new_qty = existing["quantity"] + trade.quantity
+            new_avg = total_cost / new_qty
+            
+            await db.portfolios.update_one(
+                {"_id": existing["_id"]},
+                {"$set": {
+                    "quantity": new_qty, 
+                    "average_price": new_avg,
+                    "last_updated": datetime.now()
+                }}
+            )
+        else:
+            new_item = PortfolioItemDB(
+                ticker=ticker,
+                quantity=trade.quantity,
+                average_price=trade.price
+            )
+            await db.portfolios.insert_one(new_item.dict(by_alias=True))
+            
     elif trade.action == "SELL":
-        current = data["holdings"].get(ticker)
-        if not current or current["quantity"] < trade.quantity:
+        existing = await db.portfolios.find_one({"user_id": DEFAULT_USER_ID, "ticker": ticker})
+        if not existing or existing["quantity"] < trade.quantity:
             raise HTTPException(status_code=400, detail="Insufficient holdings")
             
-        # Execute Sell
-        data["cash"] += trading_value
-        current["quantity"] -= trade.quantity
-        current["last_price"] = trade.price
+        # 1. Update Cash
+        await update_user_balance(db, trading_value)
         
-        if current["quantity"] == 0:
-            del data["holdings"][ticker]
+        # 2. Update Portfolio
+        new_qty = existing["quantity"] - trade.quantity
+        if new_qty == 0:
+            await db.portfolios.delete_one({"_id": existing["_id"]})
         else:
-            data["holdings"][ticker] = current
+            await db.portfolios.update_one(
+                {"_id": existing["_id"]},
+                {"$set": {"quantity": new_qty, "last_updated": datetime.now()}}
+            )
+
+    # 3. Log Transaction
+    transaction = TransactionDB(
+        ticker=ticker,
+        action=trade.action,
+        quantity=trade.quantity,
+        price=trade.price,
+        total_amount=trading_value
+    )
+    await db.transactions.insert_one(transaction.dict(by_alias=True))
             
-    save_data(data)
-    return {"status": "success", "new_cash": data["cash"], "portfolio": data["holdings"].get(ticker)}
+    return {"status": "success", "new_cash": await get_user_balance(db)}
 
 @router.post("/reset")
-async def reset_portfolio():
-    """Debug: Reset portfolio to initial state"""
-    data = {"cash": INITIAL_CASH, "holdings": {}}
-    save_data(data)
-    return data
+async def reset_portfolio(db = Depends(get_db)):
+    """Debug: Reset DB portfolio"""
+    await db.users.delete_many({})
+    await db.portfolios.delete_many({})
+    await db.transactions.delete_many({})
+    
+    # Re-init user
+    await get_user_balance(db)
+    return {"status": "reset"}

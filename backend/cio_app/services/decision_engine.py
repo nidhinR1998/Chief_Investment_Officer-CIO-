@@ -207,6 +207,14 @@ class DecisionEngine:
                 "ticker": ticker,
                 "timestamp": live_data["timestamp"],
                 "price": live_data["price"],
+                
+                # New: Yahoo Finance-style structure for frontend
+                "live_data": {
+                    "price": live_data["price"],
+                    "change": live_data.get("change", 0),
+                    "changePct": live_data.get("changePct", 0)
+                },
+                
                 "signal": final_signal,
                 "confidence": abs(sentiment_result.get("score", 0)) * 100, 
                 "risk": risk_level,
@@ -214,11 +222,21 @@ class DecisionEngine:
                     "volatility": ta_results.get("ATR", 0),
                     "max_drawdown": max_drawdown
                 },
-                "risk_metrics": {
-                    "volatility": ta_results.get("ATR", 0),
-                    "max_drawdown": max_drawdown
-                },
                 "fundamentals": fundamentals,
+                
+                # New: News in Yahoo Finance format
+                "news_sentiment": {
+                    "articles": [
+                        {
+                            "title": item.get("title", ""),
+                            "source": item.get("media", "Unknown"),
+                            "published": item.get("date", ""),
+                            "link": item.get("link", "")
+                        }
+                        for item in (news_items[:5] if news_items else [])
+                    ]
+                },
+                
                 "history": chart_history, 
                 "analysis": {
                     "technical": ta_results,

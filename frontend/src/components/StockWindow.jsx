@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, ExternalLink, ArrowUp, ArrowDown, Activity } from 'lucide-react';
+import { X, ExternalLink, ArrowUp, ArrowDown, Activity, Maximize2, Minimize2 } from 'lucide-react';
 import { getStockAnalysis, startMonitoring, stopMonitoring } from '../services/api';
 import StockChart from './Chart';
 
@@ -8,6 +8,7 @@ const StockWindow = ({ ticker, context, onClose }) => {
     const [loading, setLoading] = useState(true);
     const [view, setView] = useState('Overview');
     const [wsStatus, setWsStatus] = useState('disconnected'); // connected, disconnected
+    const [isMaximized, setIsMaximized] = useState(false);
 
     useEffect(() => {
         fetchData();
@@ -79,6 +80,10 @@ const StockWindow = ({ ticker, context, onClose }) => {
         setError(null);
         try {
             const result = await getStockAnalysis(ticker, context);
+            if (result.error || result.signal === 'ERROR') {
+                setError(result.error || result.analysis?.reasoning || "Failed to load stock data");
+                return;
+            }
             setData(result);
         } catch (err) {
             console.error(err);
@@ -114,7 +119,8 @@ const StockWindow = ({ ticker, context, onClose }) => {
     if (!data) return null;
 
     return (
-        <div className="bg-slate-900 bordered border border-slate-800 rounded-lg shadow-sm flex flex-col h-[450px] overflow-hidden hover:border-slate-700 transition-colors">
+        <div className={`transition-all duration-300 bg-slate-900 border border-slate-800 shadow-sm flex flex-col overflow-hidden hover:border-slate-700 text-white
+            ${isMaximized ? 'fixed inset-0 z-50 h-screen w-screen m-0 rounded-none' : 'relative h-[750px] rounded-lg resize-y'}`}>
             {/* Widget Header */}
             <div className="px-4 py-3 border-b border-slate-800 flex justify-between items-center bg-slate-900/50">
                 <div className="flex items-center gap-3">
@@ -135,11 +141,16 @@ const StockWindow = ({ ticker, context, onClose }) => {
                         </div>
                     </div>
                 </div>
-                <div className="text-right">
-                    <div className="text-lg font-mono font-medium text-white">₹{data.price}</div>
-                    <button onClick={() => onClose(ticker)} className="absolute top-3 right-3 text-slate-600 hover:text-slate-300">
-                        <X size={16} />
-                    </button>
+                <div className="text-right flex flex-col items-end">
+                    <div className="text-lg font-mono font-medium text-white mb-1">₹{data.price}</div>
+                    <div className="flex items-center gap-1">
+                        <button onClick={() => setIsMaximized(!isMaximized)} className="text-slate-400 hover:text-white transition-colors bg-slate-800/50 rounded-full p-1.5" title={isMaximized ? "Minimize" : "Maximize"}>
+                            {isMaximized ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+                        </button>
+                        <button onClick={() => onClose(ticker)} className="text-slate-400 hover:text-white transition-colors bg-slate-800/50 rounded-full p-1.5">
+                            <X size={16} />
+                        </button>
+                    </div>
                 </div>
             </div>
 
@@ -191,7 +202,7 @@ const StockWindow = ({ ticker, context, onClose }) => {
 
                         {/* Chart */}
                         <div className="flex-1 bg-slate-900 rounded border border-slate-800 p-2 relative min-h-0">
-                            <StockChart data={data.history || []} />
+                            <StockChart ticker={ticker} />
                         </div>
                     </div>
                 )}
@@ -200,10 +211,10 @@ const StockWindow = ({ ticker, context, onClose }) => {
                     <div className="space-y-4">
                         {/* Primary Trend Indicators */}
                         <div className="grid grid-cols-2 gap-3">
-                            <MetricCard label="RSI (14)" value={data.analysis.technical.RSI?.toFixed(1)} active={data.analysis.technical.RSI < 30 || data.analysis.technical.RSI > 70} trend={data.analysis.technical.RSI > 50 ? 'up' : 'down'} />
-                            <MetricCard label="MACD" value={data.analysis.technical.MACD_Line?.toFixed(1)} trend={data.analysis.technical.MACD_Line > 0 ? 'up' : 'down'} />
-                            <MetricCard label="ADX (Strength)" value={data.analysis.technical.ADX?.toFixed(1)} active={data.analysis.technical.ADX > 25} />
-                            <MetricCard label="EMA 200 (Trend)" value={data.analysis.technical.EMA_200?.toFixed(1)} active={data.price > data.analysis.technical.EMA_200} />
+                            <MetricCard label="RSI (14)" value={data.analysis.technical?.RSI?.toFixed(1)} active={data.analysis.technical?.RSI < 30 || data.analysis.technical?.RSI > 70} trend={data.analysis.technical?.RSI > 50 ? 'up' : 'down'} />
+                            <MetricCard label="MACD" value={data.analysis.technical?.MACD_Line?.toFixed(1)} trend={data.analysis.technical?.MACD_Line > 0 ? 'up' : 'down'} />
+                            <MetricCard label="ADX (Strength)" value={data.analysis.technical?.ADX?.toFixed(1)} active={data.analysis.technical?.ADX > 25} />
+                            <MetricCard label="EMA 200 (Trend)" value={data.analysis.technical?.EMA_200?.toFixed(1)} active={data.price > data.analysis.technical?.EMA_200} />
                         </div>
 
                         {/* Advanced Momentum & Volume */}

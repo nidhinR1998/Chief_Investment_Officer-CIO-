@@ -23,6 +23,14 @@ class SchedulerService:
         logger.info("Background Scheduler Stopped")
 
     @classmethod
+    def add_job(cls, func, trigger, **kwargs):
+        """
+        Adds a generic job to the scheduler.
+        """
+        cls.scheduler.add_job(func, trigger, **kwargs)
+        logger.info(f"Added background job: {kwargs.get('id', func.__name__)}")
+
+    @classmethod
     def add_stock_job(cls, ticker: str, interval_seconds: int = 5):
         """
         Adds a monitoring job for a specific stock.
@@ -44,7 +52,7 @@ class SchedulerService:
         )
         logger.info(f"Added monitoring job for {ticker} every {interval_seconds}s")
     @classmethod
-    def remove_stock_job(cls, ticker: str):
+    async def remove_stock_job(cls, ticker: str):
         """
         Removes a monitoring job, BUT only if no active alerts exist for it.
         """
@@ -52,19 +60,23 @@ class SchedulerService:
         
         # Check for active alerts before removing
         try:
-            from cio_app.routers.alerts import load_alerts
-            alerts = load_alerts()
-            # Normalize ticker check
-            normalized_ticker = ticker if ticker.endswith(".NS") or ticker.endswith(".BO") else f"{ticker}.NS"
-            
-            has_active_alert = any(
-                a.active and not a.triggered and a.ticker == normalized_ticker 
-                for a in alerts
-            )
-            
-            if has_active_alert:
-                logger.info(f"Skipping job removal for {ticker}: Active alerts exist.")
-                return
+            from cio_app.models.db import MongoDB
+            if MongoDB.db is None:
+                logger.warning("DB not connected, forcing job removal")
+            else:
+                # Normalize ticker check
+                normalized_ticker = ticker if ticker.endswith(".NS") or ticker.endswith(".BO") else f"{ticker}.NS"
+                
+                # Check if any active, untriggered alert exists for this ticker
+                alert_exists = await MongoDB.db.alerts.find_one({
+                    "ticker": normalized_ticker,
+                    "active": True,
+                    "triggered": False
+                })
+                
+                if alert_exists:
+                    logger.info(f"Skipping job removal for {ticker}: Active alerts exist.")
+                    return
                 
         except Exception as e:
             logger.error(f"Error checking alerts during job removal: {e}")
@@ -79,6 +91,8 @@ class SchedulerService:
         Runs periodic analysis and broadcasts result to all connected clients.
         """
         try:
+            from cio_app.models.db import MongoDB
+            
             logger.info(f"Running monitor job for {ticker}")
             # Perform Analysis (Fast mode, no fundamentals)
             analysis = await decision_engine.analyze_ticker(ticker, include_fundamentals=False)
@@ -95,42 +109,43 @@ class SchedulerService:
             }, default=str) # Handle datetime serialization
             await manager.broadcast(message)
 
-            # Check Alerts
-            from cio_app.routers.alerts import load_alerts, save_alerts
-            current_price = analysis.get("price")
-            if current_price:
-                alerts = load_alerts()
-                alerts_updated = False
-                for alert in alerts:
-                    if not alert.active or alert.triggered: 
-                        continue
-                    
-                    # Normalize for comparison
+            # Check Alerts (Only if DB is connected)
+            if MongoDB.db is not None:
+                current_price = analysis.get("price")
+                if current_price:
                     normalized_ticker = ticker
                     if not normalized_ticker.endswith(".NS"): normalized_ticker += ".NS"
                     
-                    if alert.ticker == normalized_ticker:
+                    # Find active alerts for this ticker
+                    async for alert in MongoDB.db.alerts.find({"ticker": normalized_ticker, "active": True, "triggered": False}):
                         triggered = False
-                        if alert.condition == "ABOVE" and current_price >= alert.target_price:
+                        if alert["condition"] == "ABOVE" and current_price >= alert["target_price"]:
                             triggered = True
-                        elif alert.condition == "BELOW" and current_price <= alert.target_price:
+                        elif alert["condition"] == "BELOW" and current_price <= alert["target_price"]:
                             triggered = True
                         
                         if triggered:
-                            alert.triggered = True
-                            alert.triggered_at = str(analysis.get("timestamp"))
-                            alerts_updated = True
-                            logger.info(f"ALERT TRIGGERED for {ticker}: Price {current_price} is {alert.condition} {alert.target_price}")
+                            # Update DB
+                            await MongoDB.db.alerts.update_one(
+                                {"_id": alert["_id"]},
+                                {"$set": {
+                                    "triggered": True,
+                                    "triggered_at": analysis.get("timestamp")
+                                }}
+                            )
+                            
+                            logger.info(f"ALERT TRIGGERED for {ticker}: Price {current_price} is {alert['condition']} {alert['target_price']}")
                             
                             # Send Alert Notification via WS
+                            alert['triggered'] = True
+                            alert['triggered_at'] = analysis.get("timestamp")
+                            alert['_id'] = str(alert['_id']) # Serialize ObjectId
+                            
                             alert_msg = json.dumps({
                                 "type": "ALERT_TRIGGERED",
-                                "data": alert.dict()
+                                "data": alert
                             }, default=str)
                             await manager.broadcast(alert_msg)
-                
-                if alerts_updated:
-                    save_alerts(alerts)
             
         except Exception as e:
             logger.error(f"Error in monitor task for {ticker}: {e}")

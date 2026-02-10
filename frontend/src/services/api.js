@@ -30,6 +30,39 @@ export const stopMonitoring = async (ticker) => {
     return await api.post(`/stocks/${ticker}/stop`);
 };
 
+// New Endpoints for Deep Data
+export const getStockFinancials = async (ticker) => {
+    try {
+        const response = await api.get(`/stocks/${ticker}/financials`);
+        return response.data;
+    } catch (error) {
+        console.error("Error fetching financials:", error);
+        return null; // Return null instead of throwing
+    }
+};
+
+export const getStockHolders = async (ticker) => {
+    try {
+        const response = await api.get(`/stocks/${ticker}/holders`);
+        return response.data;
+    } catch (error) {
+        console.error("Error fetching holders:", error);
+        return null;
+    }
+};
+
+export const getStockHistory = async (ticker, period = "1mo", interval = "1d") => {
+    try {
+        const response = await api.get(`/stocks/${ticker}/history`, {
+            params: { period, interval }
+        });
+        return response.data;
+    } catch (error) {
+        console.error("Error fetching history:", error);
+        return [];
+    }
+};
+
 export const parseSearchQuery = async (query) => {
     try {
         console.log("API: Sending Search Query:", query);
@@ -51,6 +84,37 @@ export const executeTrade = async (tradeData) => {
     // tradeData: { ticker, action, quantity, price }
     const res = await api.post('/portfolio/trade', tradeData);
     return res.data;
+};
+
+// Home Page APIs
+export const getMarketSummary = async () => {
+    try {
+        const response = await api.get('/market/summary');
+        return response.data;
+    } catch (error) {
+        console.error("Error fetching market summary:", error);
+        return null;
+    }
+};
+
+export const getTrendingStocks = async () => {
+    try {
+        const response = await api.get('/market/trending');
+        return response.data;
+    } catch (error) {
+        console.error("Error fetching trending:", error);
+        return null;
+    }
+};
+
+export const getLatestNews = async () => {
+    try {
+        const response = await api.get('/news/global');
+        return response.data; // Expecting array
+    } catch (error) {
+        console.error("Error fetching news:", error);
+        return [];
+    }
 };
 
 export default api;

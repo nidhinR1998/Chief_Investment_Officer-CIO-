@@ -57,6 +57,23 @@ npm run dev
 - **Dynamic AI Model Selection**: Automatically detects GPU and selects FinBERT (Small) or larger models.
 - **Real-time Monitoring**: Background scheduler tracks stocks.
 - **Multi-Window UI**: Drag and organize multiple stocks.
+- **Responsive UI**: Optimized for mobile/tablet with sidebar drawer.
+- **Git Repository**: Initialized and pushed to GitHub with MIT License.
+
+## Repository Info
+- **URL**: [Chief_Investment_Officer-CIO-](https://github.com/nidhinR1998/Chief_Investment_Officer-CIO-)
+- **License**: MIT
+- **Structure**: 
+  - `/backend`: FastAPI Python App
+  - `/frontend`: React/Vite App
+
+## Database Architecture
+- **Type**: MongoDB
+- **Collections**:
+  - `users`: Stores cash balance.
+  - `portfolios`: Current stock holdings.
+  - `transactions`: Audit log of all Buys/Sells.
+  - `alerts`: Persistent price alerts.
 
 ## Troubleshooting
 
